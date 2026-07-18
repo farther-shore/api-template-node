@@ -42,21 +42,27 @@ export function buildApp(fs: FartherShoreInstance): express.Express {
     next();
   });
 
-  app.use(fs.middleware({ always: true }));
+  // Pre-keystone posture: the platform's upstream request-signing rollout is
+  // not yet live, so `always: true` would reject every gateway request with
+  // missing_signature. `always: false` follows the SDK's designed pre-keystone
+  // contract — pass through while core's bootstrap reports verification not
+  // required, and fail closed automatically the moment the platform starts
+  // signing. Flip to `always: true` for strict mode once signing ships.
+  app.use(fs.middleware({ always: false }));
   app.use(parseVerifiedJson);
 
   app.post("/v1/example", async (req: VerifiedRequest, res: Response) => {
+    // Verified context is present when the gateway signs requests; absent
+    // pre-keystone (the middleware passed through per the bootstrap contract).
+    // Identity fields are optional until then — never trust plaintext X-FS-*
+    // headers as a substitute (a direct caller can spoof them).
     const ctx = req.fartherShore;
-    if (!ctx) {
-      res.status(401).json({ error: "missing_verified_context" });
-      return;
-    }
 
     const body = req.body as { message?: unknown } | undefined;
     const payload = {
       message: typeof body?.message === "string" ? body.message : "Hello",
-      subscriberId: ctx.customerId ?? ctx.tenantId ?? null,
-      planId: planIdFromContext(ctx),
+      subscriberId: ctx ? (ctx.customerId ?? ctx.tenantId ?? null) : null,
+      planId: ctx ? planIdFromContext(ctx) : null,
     };
 
     // Read identity only from the verified SDK context. Plaintext X-FS-* headers

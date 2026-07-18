@@ -37,6 +37,11 @@ docker build -t my-business-api .
 docker run -p 8080:8080 --env FS_RUNTIME_TOKEN=fsrt_... my-business-api
 ```
 
+## Runtime-token notes
+
+- Mint tokens WITHOUT `--backend` for now (`farthershore backend tokens create <business> --kind live`). Backend-bound tokens fail signed-metering verification until the platform publishes the compiled-backend artifact to the edge.
+- Verification runs in the SDK's pre-keystone posture (`always: false`): requests pass through unverified while the platform's upstream signing rollout is pending, and fail closed automatically once it ships. Keep this origin URL unadvertised — the gateway is the only intended caller.
+
 ## FartherShore Loop
 
 1. Mint a runtime token. The token is shown once:
