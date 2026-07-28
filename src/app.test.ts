@@ -1,6 +1,9 @@
 import { Readable, Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import type { FartherShoreInstance } from "@farthershore/backend";
+import {
+  createExpressHandler,
+  type FartherShoreInstance,
+} from "@farthershore/backend";
 import { createDevRuntime } from "@farthershore/backend/testing";
 import { buildApp } from "./app.js";
 
@@ -125,14 +128,20 @@ function buildAppWithRawBodyProbe(
     middleware: vi.fn(() => (req, _res, next) => {
       probe(req);
       Object.assign(req, {
+        // A guaranteed verified context — the strict middleware always attaches
+        // one (member principal here, so requireMember(ctx) narrows cleanly).
         fartherShore: {
-          customerId: null,
-          tenantId: null,
+          requestId: "req_probe",
+          principal: {
+            org: { id: "org_dev" },
+            subject: { kind: "member", memberId: "user_probe", via: "session" },
+          },
           signedContext: {},
         },
       });
       next();
     }),
+    handler: createExpressHandler,
   } as unknown as FartherShoreInstance;
   return buildApp(fs);
 }
@@ -146,6 +155,7 @@ describe("api template app", () => {
       middleware: vi.fn(() => () => {
         throw new Error("healthz must not pass through fs.middleware()");
       }),
+      handler: createExpressHandler,
     } as unknown as FartherShoreInstance;
     const app = buildApp(fs);
 
@@ -182,16 +192,22 @@ describe("api template app", () => {
     });
 
     expect(res.status).toBe(200);
+    // Identity is single-sourced from the verified cv=2 context: the owner
+    // persona is a member session, so requireMember(ctx) yields its memberId and
+    // the org/plan come from the signed claims — never a plaintext header.
     expect(res.body).toEqual({
       message: "pong",
-      subscriberId: null,
-      planId: null,
+      memberId: "user_owner",
+      org: "org_dev",
+      planId: "plan_dev",
     });
+    // The verified ctx.requestId is threaded to withUsage — the inbound
+    // x-fs-request-id header was stripped by the strict middleware.
     expect(withUsage).toHaveBeenCalledWith(
       expect.any(Request),
       expect.any(Response),
       { example_units: 1 },
-      { env: process.env },
+      { env: process.env, requestId: expect.any(String) },
     );
   });
 

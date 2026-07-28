@@ -3,12 +3,17 @@ import express, { type Request, type Response } from "express";
 import {
   type FartherShoreInstance,
   type FartherShoreRequestContext,
+  requireMember,
   withUsage,
 } from "@farthershore/backend";
 import { RUNTIME_BODY_HASH_CONTRACT } from "@farthershore/backend/runtime";
 
+// The verified context is a GUARANTEED presence on the request: the strict
+// fs.middleware() attaches it before any handler runs (a missing/invalid
+// signature or context is rejected fail-closed). So `fartherShore` is
+// NON-OPTIONAL here — read `ctx.principal` without optional-chaining.
 type VerifiedRequest = Request & {
-  fartherShore?: FartherShoreRequestContext;
+  fartherShore: FartherShoreRequestContext;
   rawBody?: Buffer;
 };
 
@@ -42,45 +47,56 @@ export function buildApp(fs: FartherShoreInstance): express.Express {
     next();
   });
 
-  // Pre-keystone posture: the platform's upstream request-signing rollout is
-  // not yet live, so `always: true` would reject every gateway request with
-  // missing_signature. `always: false` follows the SDK's designed pre-keystone
-  // contract — pass through while core's bootstrap reports verification not
-  // required, and fail closed automatically the moment the platform starts
-  // signing. Flip to `always: true` for strict mode once signing ships.
-  app.use(fs.middleware({ always: false }));
+  // Strict by default: every request is verified fail-closed, and the middleware
+  // STRIPS every inbound x-fs-* header before the handler runs — so the verified
+  // req.fartherShore context is the only identity source a handler can read.
+  app.use(fs.middleware());
   app.use(parseVerifiedJson);
 
-  app.post("/v1/example", async (req: VerifiedRequest, res: Response) => {
-    // Verified context is present when the gateway signs requests; absent
-    // pre-keystone (the middleware passed through per the bootstrap contract).
-    // Identity fields are optional until then — never trust plaintext X-FS-*
-    // headers as a substitute (a direct caller can spoof them).
-    const ctx = req.fartherShore;
+  app.post(
+    "/v1/example",
+    // fs.handler runs this only with a GUARANTEED verified context — `ctx` is a
+    // non-optional FartherShoreRequestContext, and `req` is narrowed to a
+    // VerifiedRequest (fartherShore present) for direct reads.
+    fs.handler(async (ctx, req: VerifiedRequest, res: Response) => {
+      // `ctx` is the GUARANTEED verified context — fs.handler only runs it with
+      // a present context (else 401). Identity comes ONLY from here; the
+      // middleware already stripped every inbound x-fs-* header, so a spoofed
+      // identity/metering header is not even readable in this handler.
+      //
+      // The consumer principal is the verified subject behind the request:
+      // `member` (a person — a portal session or a personal key) carries
+      // `memberId`; `service` (an org-owned service account) carries
+      // `serviceAccountId`. On a route the gateway restricts to members
+      // (`requireMember: true`), narrow to the member arm with requireMember(ctx)
+      // — it throws `member_subject_required` (403) for service traffic — and
+      // key per-user data on the verified memberId.
+      const { memberId } = requireMember(ctx);
 
-    const body = req.body as { message?: unknown } | undefined;
-    const payload = {
-      message: typeof body?.message === "string" ? body.message : "Hello",
-      subscriberId: ctx ? (ctx.customerId ?? ctx.tenantId ?? null) : null,
-      planId: ctx ? planIdFromContext(ctx) : null,
-    };
+      const body = req.body as { message?: unknown } | undefined;
+      const payload = {
+        message: typeof body?.message === "string" ? body.message : "Hello",
+        // Scope per-user data on the verified member id, never a plaintext header.
+        memberId,
+        org: ctx.principal.org.id,
+        planId: planIdFromContext(ctx),
+      };
 
-    // Read identity only from the verified SDK context. Plaintext X-FS-* headers
-    // can be spoofed by a direct caller; the gateway-signed context is what the
-    // middleware verified against the actual method, path, headers, and body.
-    // Report only custom meters declared by your business/business.ts beyond
-    // the built-in request count, such as tokens or compute seconds. The gateway
-    // already counts requests, then verifies, settles, and strips these signed
-    // usage headers; never report `requests` from the backend.
-    const signed = await withUsage(
-      toFetchRequest(req),
-      Response.json(payload),
-      { example_units: 1 },
-      { env: process.env },
-    );
-    signed.headers.forEach((value, name) => res.setHeader(name, value));
-    res.status(signed.status).json(payload);
-  });
+      // Report only custom meters your business/business.ts declares beyond the
+      // built-in request count (tokens, compute seconds, …). The gateway already
+      // counts requests, then verifies, settles, and strips these signed usage
+      // headers; never report `requests` from the backend. Thread the verified
+      // ctx.requestId — the inbound x-fs-request-id header has been stripped.
+      const signed = await withUsage(
+        toFetchRequest(req),
+        Response.json(payload),
+        { example_units: 1 },
+        { env: process.env, requestId: ctx.requestId },
+      );
+      signed.headers.forEach((value, name) => res.setHeader(name, value));
+      res.status(signed.status).json(payload);
+    }),
+  );
 
   return app;
 }
@@ -132,8 +148,8 @@ function headerValue(
 }
 
 function planIdFromContext(ctx: FartherShoreRequestContext): string | null {
-  const signed = ctx.signedContext as { planId?: unknown } | undefined;
-  return typeof signed?.planId === "string" ? signed.planId : null;
+  const planId = ctx.signedContext?.compiledPlanId;
+  return typeof planId === "string" ? planId : null;
 }
 
 function toFetchRequest(req: Request): globalThis.Request {
