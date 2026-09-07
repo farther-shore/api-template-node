@@ -2,6 +2,8 @@ import { Readable, Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import {
   createExpressHandler,
+  METERING_PAYLOAD_HEADER,
+  METERING_SIGNATURE_HEADER,
   type FartherShoreInstance,
 } from "@farthershore/backend";
 import { createDevRuntime } from "@farthershore/backend/testing";
@@ -10,14 +12,6 @@ import { buildApp } from "./app.js";
 const usageEnv = {
   FS_RUNTIME_TOKEN: "fsrt_live_test_00000000000000000000000000000000",
 };
-
-vi.mock("@farthershore/backend", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@farthershore/backend")>();
-  return {
-    ...actual,
-    withUsage: vi.fn(async (_req, response, _usage) => response),
-  };
-});
 
 type AppResponse = {
   status: number;
@@ -137,6 +131,7 @@ function buildAppWithRawBodyProbe(
             subject: { kind: "member", memberId: "user_probe", via: "session" },
           },
           signedContext: {},
+          report: vi.fn(async () => ({ ok: true, transport: "in_band" })),
         },
       });
       next();
@@ -170,8 +165,6 @@ describe("api template app", () => {
 
   it("verifies a real signed JSON request and reports custom usage", async () => {
     process.env.FS_RUNTIME_TOKEN = usageEnv.FS_RUNTIME_TOKEN;
-    const { withUsage } = await import("@farthershore/backend");
-    vi.mocked(withUsage).mockClear();
     const runtime = createDevRuntime({ mode: "simulated" });
     const app = buildApp(runtime.fs);
     const body = JSON.stringify({ message: "pong" });
@@ -201,14 +194,17 @@ describe("api template app", () => {
       org: "org_dev",
       planId: "plan_dev",
     });
-    // The verified ctx.requestId is threaded to withUsage — the inbound
-    // x-fs-request-id header was stripped by the strict middleware.
-    expect(withUsage).toHaveBeenCalledWith(
-      expect.any(Request),
-      expect.any(Response),
-      { example_units: 1 },
-      { env: process.env, requestId: expect.any(String) },
-    );
+    // ctx.report() ran BEFORE res.json(), so the measurement rode signed
+    // in-band headers — no identity argument and no transport choice in the
+    // handler. The gateway verifies, settles, and strips these on the way out.
+    const meteringPayload = res.headers[METERING_PAYLOAD_HEADER];
+    expect(JSON.parse(String(meteringPayload))).toMatchObject({
+      method: "POST",
+      path: "/v1/example",
+      measurementsVersion: 1,
+      measurements: [{ meter: "example_units", values: { example_units: 1 } }],
+    });
+    expect(res.headers[METERING_SIGNATURE_HEADER]).toEqual(expect.any(String));
   });
 
   it("captures JSON raw bytes before verification and parses JSON after verification", async () => {

@@ -1,8 +1,8 @@
 import { initFromEnv } from "@farthershore/backend";
 import { buildApp } from "./app.js";
 
-// `withUsage` THROWS when FS_RUNTIME_TOKEN is absent — it does not silently
-// degrade, because an unmetered request is unbilled revenue. Without this
+// Reporting needs FS_RUNTIME_TOKEN: without it `ctx.report()` has nothing to
+// sign with, and an unmetered request is unbilled revenue. Without this
 // check the process starts happily and then returns a bare 500 on every
 // metered route, with nothing in the response explaining why. That is the
 // normal first-deploy path: the token is host configuration, so it is easy to

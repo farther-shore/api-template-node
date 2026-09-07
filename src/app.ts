@@ -4,7 +4,6 @@ import {
   type FartherShoreInstance,
   type FartherShoreRequestContext,
   requireMember,
-  withUsage,
 } from "@farthershore/backend";
 import { RUNTIME_BODY_HASH_CONTRACT } from "@farthershore/backend/runtime";
 
@@ -82,19 +81,18 @@ export function buildApp(fs: FartherShoreInstance): express.Express {
         planId: planIdFromContext(ctx),
       };
 
-      // Report only custom meters your business/business.ts declares beyond the
-      // built-in request count (tokens, compute seconds, …). The gateway already
-      // counts requests, then verifies, settles, and strips these signed usage
-      // headers; never report `requests` from the backend. Thread the verified
-      // ctx.requestId — the inbound x-fs-request-id header has been stripped.
-      const signed = await withUsage(
-        toFetchRequest(req),
-        Response.json(payload),
-        { example_units: 1 },
-        { env: process.env, requestId: ctx.requestId },
-      );
-      signed.headers.forEach((value, name) => res.setHeader(name, value));
-      res.status(signed.status).json(payload);
+      // ONE reporting verb. Report only measurements your business/business.ts
+      // declares beyond the built-in request count (tokens, compute seconds, …);
+      // the gateway already counts requests, so never report `requests` here.
+      // No identity argument: `ctx` already carries the served identity. No
+      // transport choice either — reported BEFORE res.json() this rides signed
+      // response headers; report it after a stream ends and the SDK sends it
+      // over the post-stream channel instead.
+      await ctx.report({
+        meter: "example_units",
+        values: { example_units: 1 },
+      });
+      res.status(200).json(payload);
     }),
   );
 
@@ -150,13 +148,4 @@ function headerValue(
 function planIdFromContext(ctx: FartherShoreRequestContext): string | null {
   const planId = ctx.signedContext?.compiledPlanId;
   return typeof planId === "string" ? planId : null;
-}
-
-function toFetchRequest(req: Request): globalThis.Request {
-  const protocol = req.protocol || "http";
-  const host = req.get("host") ?? "localhost";
-  return new Request(`${protocol}://${host}${req.originalUrl}`, {
-    method: req.method,
-    headers: req.headers as Record<string, string>,
-  });
 }
