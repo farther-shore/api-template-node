@@ -21,10 +21,6 @@ as an environment variable on your cloud instance (your host's env-var
 settings, `docker run --env`, or your platform's secrets manager). Never
 commit it or keep it in a local dotenv file.
 
-```sh
-farthershore backend tokens create <business> --kind live
-```
-
 The template exposes open liveness at `GET /healthz` and an example protected
 route at `POST /v1/example`.
 
@@ -34,32 +30,62 @@ Build and run this service on any Docker host:
 
 ```sh
 docker build -t my-business-api .
-docker run -p 8080:8080 --env FS_RUNTIME_TOKEN=fsrt_... my-business-api
+docker run -p 3000:3000 --env FS_RUNTIME_TOKEN=fsrt_... my-business-api
 ```
+
+The service listens on `PORT`, defaulting to **3000** — the port the
+FartherShore scaffold and transport-mode docs assume. Set `PORT` to override it.
 
 ## Runtime-token notes
 
-- Mint tokens WITHOUT `--backend` for now (`farthershore backend tokens create <business> --kind live`). Backend-bound tokens fail signed-metering verification until the platform publishes the compiled-backend artifact to the edge.
-- Verification runs in the SDK's pre-keystone posture (`always: false`): requests pass through unverified while the platform's upstream signing rollout is pending, and fail closed automatically once it ships. Keep this origin URL unadvertised — the gateway is the only intended caller.
+- This template serves one logical backend, so use a backend-scoped token. The
+  scope binds bootstrap, request verification, health, and metering to that
+  backend instead of granting the deployment access to every backend in the
+  business.
+- Verification is strict by default. Missing, invalid, or mismatched gateway
+  signatures fail closed; never set `{ always: false }` for a production
+  deployment. Keep the origin URL unadvertised — the gateway is the only
+  intended caller.
 
 ## FartherShore Loop
 
-1. Mint a runtime token. The token is shown once:
+1. Register the public origin and keep the returned backend id:
 
    ```sh
-   farthershore backend tokens create <business> --kind live
+   farthershore backend create <business> \
+     --name api \
+     --transport direct \
+     --origin-url https://<host> \
+     --default \
+     --idempotency-key <persisted-backend-create-attempt-key> \
+     --format json
    ```
 
-2. Set `FS_RUNTIME_TOKEN` on your host.
-
-3. Register the public origin:
+2. Mint a backend-scoped runtime token. The token is shown once, so capture it
+   directly into your host's secret manager and never commit or log it:
 
    ```sh
-   farthershore backend create <business> --name api --transport direct --origin-url https://<host> --default
+   farthershore backend tokens create <business> \
+     --backend <backend-id> \
+     --kind live \
+     --idempotency-key <persisted-runtime-token-create-attempt-key> \
+     --format json
    ```
 
-4. For a backend that is not publicly reachable, use the tunnel transport
-   instead of `direct`.
+3. Set `FS_RUNTIME_TOKEN` on your host. Set `FS_CORE_URL` when the deployment
+   targets a non-production Farther Shore environment, then deploy or restart
+   the service. Startup binds the port first, then calls `fs.ready(app)`, which
+   bootstraps the backend, reconciles routes, and reports the replica ready. A
+   bootstrap failure (for example 409 `no_backend` before step 1 has run) is
+   logged with its code and message and does NOT stop the process: `/healthz`
+   stays up so the host can tell "misconfigured" from "crashed", while every
+   verified route still fails closed.
+
+4. Confirm the platform sees the backend as healthy:
+
+   ```sh
+   farthershore backend list <business> --format json
+   ```
 
 Routes must be declared in `business/business.ts` features before subscribers
 can reach them through the gateway.

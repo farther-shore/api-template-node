@@ -5,7 +5,10 @@ import {
   type FartherShoreRequestContext,
   requireMember,
 } from "@farthershore/backend";
-import { RUNTIME_BODY_HASH_CONTRACT } from "@farthershore/backend/runtime";
+import {
+  RUNTIME_BODY_HASH_CONTRACT,
+  isStreamingExemptContentType,
+} from "@farthershore/backend/runtime";
 
 // The verified context is a GUARANTEED presence on the request: the strict
 // fs.middleware() attaches it before any handler runs (a missing/invalid
@@ -15,10 +18,6 @@ type VerifiedRequest = Request & {
   fartherShore: FartherShoreRequestContext;
   rawBody?: Buffer;
 };
-
-const STREAMING_CONTENT_TYPES = new Set<string>(
-  RUNTIME_BODY_HASH_CONTRACT.streamingExemptContentTypes,
-);
 
 export function buildApp(fs: FartherShoreInstance): express.Express {
   const app = express();
@@ -104,9 +103,9 @@ function shouldCaptureRawBody(req: IncomingMessage): boolean {
 }
 
 function isStreamingExempt(contentType: string | undefined): boolean {
-  if (!contentType) return false;
-  const base = contentType.split(";")[0]?.trim().toLowerCase();
-  return base !== undefined && STREAMING_CONTENT_TYPES.has(base);
+  // The SDK exports the shared rule's content-type predicate; re-deriving it
+  // locally is how a scaffold drifts from the gateway signer.
+  return isStreamingExemptContentType(contentType);
 }
 
 function parseVerifiedJson(

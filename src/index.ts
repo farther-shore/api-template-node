@@ -1,5 +1,6 @@
 import { initFromEnv } from "@farthershore/backend";
 import { buildApp } from "./app.js";
+import { bootstrapFailureMessage, resolvePort } from "./startup.js";
 
 // Reporting needs FS_RUNTIME_TOKEN: without it `ctx.report()` has nothing to
 // sign with, and an unmetered request is unbilled revenue. Without this
@@ -24,11 +25,26 @@ if (!process.env.FS_RUNTIME_TOKEN) {
 
 const fs = await initFromEnv();
 const app = buildApp(fs);
-const port = Number(process.env.PORT ?? 8080);
+const port = resolvePort();
 
+// Listen FIRST. `fs.ready()` talks to core, and core can legitimately refuse
+// (409 `no_backend` before the business has a backend row, for instance). A
+// process that dies on that unhandled rejection looks to the host like a
+// crash-looping image; one that stays up serves `GET /healthz`, logs the
+// actual code and message, and keeps every verified route fail-closed through
+// the SDK middleware — which is the diagnosable failure, not the silent one.
 const server = app.listen(port, () => {
-  console.log(`api-template-node listening on :${port}`);
+  console.log(`api-template-node listening on port ${port}`);
 });
+
+// Bootstrap, reconcile the implemented route surface, and report this replica
+// ready. The SDK keeps this best-effort; the catch covers the remaining case
+// where bootstrap itself throws.
+try {
+  await fs.ready(app);
+} catch (error) {
+  console.error(bootstrapFailureMessage(error));
+}
 
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
   try {
