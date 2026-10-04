@@ -57,7 +57,6 @@ FartherShore scaffold and transport-mode docs assume. Set `PORT` to override it.
      --transport direct \
      --origin-url https://<host> \
      --default \
-     --idempotency-key <persisted-backend-create-attempt-key> \
      --format json
    ```
 
@@ -68,7 +67,6 @@ FartherShore scaffold and transport-mode docs assume. Set `PORT` to override it.
    farthershore backend tokens create <business> \
      --backend <backend-id> \
      --kind live \
-     --idempotency-key <persisted-runtime-token-create-attempt-key> \
      --format json
    ```
 
