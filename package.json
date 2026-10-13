@@ -1,6 +1,6 @@
 {
   "name": "api",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": true,
   "type": "module",
   "engines": {
@@ -15,7 +15,7 @@
     "lint": "prettier --check \"src/**/*.ts\""
   },
   "dependencies": {
-    "@farthershore/backend": "0.22.0",
+    "@farthershore/backend": "0.23.0",
     "express": "^5.2.1"
   },
   "devDependencies": {
